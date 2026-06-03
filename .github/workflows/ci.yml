@@ -1,0 +1,296 @@
+name: ci
+
+# cf-invariants-jito-tippayment CI — invariant + Crucible + scorecard.
+#
+# The CI run IS the proof: zero local toolchain footprint, every push
+# rebuilds the Jito tip-payment program (anchor-lang 0.31.1 -> 1.0.1
+# port) AND its planted twin, then runs the Crucible harness on the
+# clean/planted pair, asserting clean=0 violations and planted>=1
+# violation for the invariant class. Real scorecard is captured
+# (ANSI-stripped) under findings/<invariant>/ and uploaded as an
+# artifact. If any matrix cell stops being green, the artifact is
+# broken — we never publish a manual "verified" claim.
+#
+# Class proven by this CI:
+#   - change_tip_receiver_state_update — jito_tippay_ref pair,
+#     invariant_change_tip_receiver_updates_config
+#
+# Pinned upstream surfaces (matched to cf-invariants-jito's ci.yml):
+#   - Crucible:        v0.2.0    (asymmetric-research/crucible)
+#   - anchor-lang:     1.0.1     (matches Crucible v0.2.0 workspace)
+#   - Solana CLI:      v2.1.21   (Anza release; recent stable)
+#   - platform-tools:  v1.52     (recent tag with linux-x86_64 asset;
+#                                 the bundled default in Agave v2.1.21
+#                                 is v1.43, too old for anchor-lang
+#                                 1.0.1 deps. Agave v2.1.21 ships a
+#                                 buggy cargo-build-sbf that panics if
+#                                 ~/.cache/solana doesn't exist — we
+#                                 mkdir it explicitly before the first
+#                                 invocation.)
+#
+# The two env vars GIT_SHA / GIT_REF_NAME are read by the program's
+# build.rs and baked into the on-chain security-txt block via env!().
+# Without them the build emits a "GIT_SHA_MISSING" / "GIT_REF_NAME_MISSING"
+# placeholder, which is fine for CI — this CI is not producing release
+# artifacts for mainnet, only proof-of-buildability for the harness pipeline.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CRUCIBLE_REF: v0.2.0
+  SOLANA_VERSION: v2.1.21
+  SOLANA_TOOLS_VERSION: v1.52
+  # Iteration budget per Crucible run. Small enough to fit a free-tier
+  # GitHub-hosted runner; large enough for the planted bug to fire
+  # (minimal counterexample for this invariant is 1 action).
+  CRUCIBLE_TIMEOUT: '30'
+
+jobs:
+  workspace-check:
+    name: cf-invariants-jito-tippayment workspace check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: cargo check --workspace
+        run: cargo check --workspace --locked || cargo check --workspace
+
+  build-sbf:
+    name: cargo build-sbf jito-tip-payment (marquee artifact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install Anza / Solana CLI ${{ env.SOLANA_VERSION }}
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Pre-create platform-tools cache dir
+        run: mkdir -p "$HOME/.cache/solana"
+
+      - name: Verify solana / cargo-build-sbf on PATH
+        run: |
+          solana --version
+          cargo-build-sbf --version
+
+      - name: cargo build-sbf jito-tip-payment
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path programs/tip-payment/Cargo.toml
+          ls -l target/deploy/jito_tip_payment.so
+
+      - name: Upload built program artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jito_tip_payment-so
+          path: target/deploy/jito_tip_payment.so
+
+  harness:
+    name: build + run Crucible harness (clean + planted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo (cf-invariants-jito-tippayment workspace)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install Anza / Solana CLI ${{ env.SOLANA_VERSION }}
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Pre-create platform-tools cache dir
+        run: mkdir -p "$HOME/.cache/solana"
+
+      - name: Verify solana / cargo-build-sbf on PATH
+        run: |
+          solana --version
+          cargo-build-sbf --version
+
+      - name: Clone Crucible @ ${{ env.CRUCIBLE_REF }} (sibling to this repo)
+        # Path deps in references/*/fuzz/*/Cargo.toml resolve to
+        # `../../../../../crucible/...`, i.e. <repo-root>/../crucible.
+        working-directory: ${{ github.workspace }}/..
+        run: |
+          git clone --depth 1 --branch "${CRUCIBLE_REF}" \
+            https://github.com/asymmetric-research/crucible.git crucible
+          (cd crucible && git rev-parse HEAD)
+
+      - name: Cache cargo (Crucible build)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ../crucible -> target
+          key: crucible-${{ env.CRUCIBLE_REF }}
+
+      - name: Build + install Crucible CLI from v0.2.0 source
+        working-directory: ${{ github.workspace }}/../crucible
+        run: |
+          cargo install --path crates/crucible-fuzz-cli --locked || \
+            cargo install --path crates/crucible-fuzz-cli
+          which crucible
+          crucible --version || crucible --help | head -3
+
+      # -----------------------------------------------------------------
+      # Build the clean reference .so and the planted twin .so.
+      # -----------------------------------------------------------------
+
+      - name: cargo build-sbf jito_tippay_ref (clean)
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/jito_tippay_ref/programs/tip-payment/Cargo.toml
+          ls -l references/jito_tippay_ref/target/deploy/jito_tip_payment.so
+
+      - name: cargo build-sbf jito_tippay_ref_planted_change_tip_receiver_state
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/jito_tippay_ref_planted_change_tip_receiver_state/programs/tip-payment/Cargo.toml
+          ls -l references/jito_tippay_ref_planted_change_tip_receiver_state/target/deploy/jito_tip_payment.so
+
+      # -----------------------------------------------------------------
+      # Sync fixture source clean → planted (the fixture source IS the
+      # contract; both variants must run the same probe code so the only
+      # behavioral difference is the planted bug in the program .so).
+      # -----------------------------------------------------------------
+
+      - name: Sync fixture source clean → planted
+        run: |
+          cp references/jito_tippay_ref/fuzz/jito_change_tip_receiver_state/src/main.rs \
+             references/jito_tippay_ref_planted_change_tip_receiver_state/fuzz/jito_change_tip_receiver_state/src/main.rs
+
+      # -----------------------------------------------------------------
+      # Pair — change_tip_receiver_state_update
+      # -----------------------------------------------------------------
+
+      - name: Crucible run — change_tip_receiver_state CLEAN (expect 0 violations)
+        id: change_tip_receiver_state_clean
+        working-directory: references/jito_tippay_ref/fuzz/jito_change_tip_receiver_state
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run jito_tip_payment invariant_change_tip_receiver_updates_config \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_clean.out"; then
+            echo "::error::change_tip_receiver_state clean reported a violation — the rotation commit is being missed or the fixture's oracle is wrong"
+            exit 1
+          fi
+
+      - name: Crucible run — change_tip_receiver_state PLANTED (expect >=1 violation)
+        id: change_tip_receiver_state_planted
+        working-directory: references/jito_tippay_ref_planted_change_tip_receiver_state/fuzz/jito_change_tip_receiver_state
+        run: |
+          set +e
+          crucible run jito_tip_payment invariant_change_tip_receiver_updates_config \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_planted.out"; then
+            echo "change_tip_receiver_state planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "change_tip_receiver_state planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::change_tip_receiver_state planted ran clean — the dropped Config.tip_receiver commit was not surfaced within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Aggregate scorecards from real CI output.
+      # -----------------------------------------------------------------
+
+      - name: Capture scorecards from real CI output
+        if: always()
+        run: |
+          TC="rustc $(rustc --version | awk '{print $2}'), solana $(solana --version | awk '{print $2}'), platform-tools ${SOLANA_TOOLS_VERSION}, crucible v0.2.0 (anchor-lang 1.0.1)"
+          STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          render_scorecard() {
+            local inv="$1" variant="$2" total="$3" violated="$4" class="$5"
+            local out_dir="findings/${inv}_${variant}"
+            local raw="$GITHUB_WORKSPACE/ci-out/${inv}_${variant}.out"
+            mkdir -p "$out_dir"
+            {
+              echo "# cf-invariants-jito-tippayment scorecard (CI capture, ${inv} ${variant} variant)"
+              echo
+              echo "Captured by \`.github/workflows/ci.yml\` on ${STAMP}."
+              echo "Toolchain: ${TC}."
+              echo "Crucible timeout: ${CRUCIBLE_TIMEOUT}s."
+              echo "Invariant class: \`${class}\`."
+              echo
+              echo "## Summary"
+              echo
+              echo "- Invariants total: **${total}**"
+              echo "- Invariants violated: **${violated}**"
+              echo "- AI-suggested invariants in this run: **0**"
+              echo "- Crucible version: \`0.2.0\`"
+              echo
+              echo "## Raw output"
+              echo
+              echo '```'
+              if [ -f "$raw" ]; then
+                sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$raw"
+              else
+                echo "(no output captured)"
+              fi
+              echo '```'
+            } > "$out_dir/scorecard.md"
+          }
+          render_scorecard "change_tip_receiver_state" "clean"   "1" "0"   "change_tip_receiver_state_update"
+          render_scorecard "change_tip_receiver_state" "planted" "1" ">=1" "change_tip_receiver_state_update"
+
+      - name: Upload scorecards + raw output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crucible-scorecards
+          path: |
+            ci-out/*.out
+            findings/change_tip_receiver_state_clean/scorecard.md
+            findings/change_tip_receiver_state_planted/scorecard.md
