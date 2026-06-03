@@ -1,0 +1,69 @@
+cf-invariants-jito-tippayment
+Copyright 2026 CaliperForge
+
+This product includes software developed by CaliperForge
+(https://caliperforge.com).
+
+------------------------------------------------------------------------
+Third-party attributions
+------------------------------------------------------------------------
+
+This repository includes a modified copy of code originally distributed
+by the Jito Foundation as part of the `jito-foundation/jito-programs`
+project (https://github.com/jito-foundation/jito-programs), specifically
+the `tip-payment` program.
+
+The upstream code is licensed under the Apache License, Version 2.0:
+
+    Copyright 2024 Jito Foundation
+    Licensed under the Apache License, Version 2.0.
+    https://github.com/jito-foundation/jito-programs
+
+Modifications relative to upstream
+----------------------------------
+
+1. `programs/tip-payment/` — a port of `jito-tip-payment` from
+   `anchor-lang` `0.31.1` to `anchor-lang` `1.0.1` for use as the
+   cf-invariants-jito-tippayment harness target. Build-system and
+   dependency surfaces were updated:
+
+   - Upstream `solana-program = "2.2"` is dropped from direct deps.
+     anchor-lang 1.0.1 supplies solana-program transitively via its
+     modular solana-3.x interfaces.
+   - Upstream `use solana_program::loader_v4;` is replaced with
+     `solana_sdk_ids::loader_v4` (the modular crate that anchor-lang
+     1.0.1 already brings in transitively for the other loader / sysvar
+     / config program ID modules).
+   - `CpiContext::new(...)`'s first argument changed from
+     `AccountInfo<'info>` to `Pubkey` in anchor-lang 1.0.1; the single
+     call site in `TipPaymentAccount::initialize` was updated
+     accordingly (`*system_program.key`).
+
+   The program logic — initialize / change_tip_receiver /
+   change_block_builder / handle_payments / Fees::calculate /
+   transfer_or_credit_tip_pda / TipPaymentAccount::drain_account — is
+   preserved.
+
+2. `references/jito_tippay_ref/` — a clean baseline copy of the ported
+   `tip-payment` program plus a Crucible fuzz fixture
+   (`fuzz/jito_change_tip_receiver_state`) authored by CaliperForge.
+   The fuzz-fixture sources are CaliperForge-authored harness code, not
+   upstream code.
+
+3. `references/jito_tippay_ref_planted_change_tip_receiver_state/` — a
+   CaliperForge-authored "planted-bug" variant of the clean reference.
+   It introduces a single-site logic regression into `change_tip_receiver`
+   (dropping the `ctx.accounts.config.tip_receiver =
+   ctx.accounts.new_tip_receiver.key();` write) so the Crucible harness
+   can prove the corresponding invariant class fires (`planted >= 1`
+   violation) while the clean reference holds (`clean = 0` violations).
+   The planted modification is described in `README.md` and visible as
+   a diff against `references/jito_tippay_ref/`.
+
+All files derived from the Jito upstream remain under Apache License,
+Version 2.0. CaliperForge-authored files (harness, fuzz fixtures, CI,
+README, this NOTICE) are likewise licensed under Apache License,
+Version 2.0 per the LICENSE file at the repository root.
+
+The Jito Foundation does not endorse this project. This harness is
+maintained independently by CaliperForge.
