@@ -1,0 +1,28 @@
+[package]
+name = "jito_change_block_builder_state_fuzz"
+version = "0.1.0"
+edition = "2021"
+description = "Crucible fuzz harness for jito_tippay_ref — change_block_builder_state_update invariant."
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+crucible-fuzzer       = { path = "../../../../../crucible/crates/crucible-fuzzer" }
+crucible-test-context = { path = "../../../../../crucible/crates/crucible-test-context" }
+anchor-lang = "=1.0.1"
+arbitrary = { version = "1", features = ["derive"] }
+ctrlc = "3.4"
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+jito-tip-payment = { path = "../../programs/tip-payment", features = ["no-entrypoint"] }
+solana-keypair = "3.0"
+solana-pubkey = "3.0"
+solana-signer = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+invariant_change_block_builder_updates_config = []
