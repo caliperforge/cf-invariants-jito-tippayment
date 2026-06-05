@@ -44,13 +44,15 @@ property that must hold no matter what call sequence is fuzzed — and
 proves the harness can confirm the property on the clean reference
 and catch a deliberately planted regression.
 
-## What it tests — one invariant class
+## What it tests — three invariant classes
 
 | Class | Invariant under test | Planted-bug site |
 |---|---|---|
 | `change_tip_receiver_state_update` | `invariant_change_tip_receiver_updates_config` — after every successful `change_tip_receiver` call, on-chain `Config.tip_receiver` equals the `new_tip_receiver` pubkey the caller passed in. | `programs/tip-payment/src/lib.rs::change_tip_receiver` — the `ctx.accounts.config.tip_receiver = ctx.accounts.new_tip_receiver.key();` commit line is dropped. The instruction's lamport-side effects (drain + credit) still run normally, so Solana's runtime balance check is not tripped; only the rotation never commits. |
+| `change_block_builder_state_update` | `invariant_change_block_builder_updates_config` — after every successful `change_block_builder` call, on-chain `Config.block_builder` equals the `new_block_builder` argument AND `Config.block_builder_commission_pct` equals the `block_builder_commission` argument. | `programs/tip-payment/src/lib.rs::change_block_builder` — the `ctx.accounts.config.block_builder = ctx.accounts.new_block_builder.key();` commit line is dropped. The commission write below it still runs, so the lamport balance check passes; only the block-builder rotation never commits. |
+| `block_builder_commission_pct_bounds` | `invariant_block_builder_commission_pct_bound` — at all times, on-chain `Config.block_builder_commission_pct` is in `[0, 100]`. (The program enforces percentage via `require_gte!(100, …)`, not basis points.) | `programs/tip-payment/src/lib.rs::change_block_builder` — the `require_gte!(100, block_builder_commission, …)` gate is dropped. The instruction then accepts any caller-supplied `u64` and commits it to `Config.block_builder_commission_pct`. |
 
-**Why this invariant, not lamport conservation.** A natural first pick
+**Why this invariant set, not lamport conservation.** A natural first pick
 for tip-payment is "total lamports across `{recv_a, recv_b, config, 8
 tip_pdas}` are conserved by every successful call." We tried it
 first; it does not work as a Crucible invariant because the Solana
@@ -60,13 +62,14 @@ credits has its tx rejected by the runtime *before* the fixture's
 `read_account` sees a discrepancy — so the invariant cannot
 meaningfully observe a violation. A user-meaningful structural
 invariant for this program has to live in the post-instruction state
-shape that the runtime does NOT police. `Config.tip_receiver` —
-whether the on-chain rotation actually commits — is exactly that
-shape.
+shape that the runtime does NOT police: `Config.tip_receiver` /
+`Config.block_builder` (whether the on-chain rotation actually
+commits) and `Config.block_builder_commission_pct` (whether the
+percentage gate holds).
 
 CI result on the published commit: `clean = 0` violations and
-`planted >= 1` violation. The CI badge is the source of truth — if
-it is red, the harness is broken.
+`planted >= 1` violation on each of the three class pairs. The CI
+badge is the source of truth — if it is red, the harness is broken.
 
 ## Repository layout
 
@@ -74,12 +77,14 @@ it is red, the harness is broken.
 .
 ├── programs/tip-payment/                          # cf-invariants-jito-tippayment port (anchor-lang 1.0.1)
 ├── references/
-│   ├── jito_tippay_ref/                           # clean baseline + Crucible fuzz fixture
-│   │   ├── programs/tip-payment/                  # ported program (== port above)
-│   │   └── fuzz/jito_change_tip_receiver_state/   # fuzz fixture
-│   └── jito_tippay_ref_planted_change_tip_receiver_state/
-│       ├── programs/tip-payment/                  # planted variant (1-line bug)
-│       └── fuzz/jito_change_tip_receiver_state/   # synced fixture (same code as clean)
+│   ├── jito_tippay_ref/                                      # clean baseline + Crucible fuzz fixtures
+│   │   ├── programs/tip-payment/                             # ported program (== port above)
+│   │   ├── fuzz/jito_change_tip_receiver_state/              # fixture: change_tip_receiver_state_update
+│   │   ├── fuzz/jito_change_block_builder_state/             # fixture: change_block_builder_state_update
+│   │   └── fuzz/jito_block_builder_commission_bounds/        # fixture: block_builder_commission_pct_bounds
+│   ├── jito_tippay_ref_planted_change_tip_receiver_state/    # planted twin (drops the tip-receiver commit)
+│   ├── jito_tippay_ref_planted_change_block_builder_state/   # planted twin (drops the block-builder commit)
+│   └── jito_tippay_ref_planted_block_builder_commission/     # planted twin (drops the require_gte! gate)
 ├── .github/workflows/ci.yml                       # CI: workspace check + build-sbf + harness matrix
 ├── Cargo.toml                                     # workspace
 ├── LICENSE                                        # Apache-2.0 (CaliperForge)
@@ -87,11 +92,11 @@ it is red, the harness is broken.
 └── README.md
 ```
 
-The fuzz-fixture source for the invariant lives once under
-`references/jito_tippay_ref/fuzz/jito_change_tip_receiver_state/src/main.rs`;
-CI copies the same source into the planted variant before the run, so
-the only difference between a clean run and the planted run is the
-`.so` binary loaded into LiteSVM.
+Each invariant class has one fixture source-of-truth under
+`references/jito_tippay_ref/fuzz/<class>/src/main.rs`; CI copies it
+into the matching planted variant before the run, so the only
+difference between a clean run and the planted run is the `.so`
+binary loaded into LiteSVM.
 
 ## Pinned toolchain
 
@@ -135,9 +140,11 @@ cargo check --workspace --locked || cargo check --workspace
 cargo build-sbf --tools-version v1.52 \
     --manifest-path programs/tip-payment/Cargo.toml
 
-# 4. Build the clean reference + planted twin.
+# 4. Build the clean reference + the three planted twins.
 for variant in jito_tippay_ref \
-               jito_tippay_ref_planted_change_tip_receiver_state; do
+               jito_tippay_ref_planted_change_tip_receiver_state \
+               jito_tippay_ref_planted_change_block_builder_state \
+               jito_tippay_ref_planted_block_builder_commission; do
     cargo build-sbf --tools-version v1.52 \
         --manifest-path "references/${variant}/programs/tip-payment/Cargo.toml"
 done
@@ -145,14 +152,26 @@ done
 # 5. Build + install Crucible CLI from source.
 (cd ../crucible && cargo install --path crates/crucible-fuzz-cli --locked)
 
-# 6. Run the harness on the clean pair (expect no FUZZ_FINDING line).
+# 6. Run the three clean pairs (expect no FUZZ_FINDING / [VIOLATION] line).
 (cd references/jito_tippay_ref/fuzz/jito_change_tip_receiver_state && \
     crucible run jito_tip_payment invariant_change_tip_receiver_updates_config \
         --release --timeout 30)
+(cd references/jito_tippay_ref/fuzz/jito_change_block_builder_state && \
+    crucible run jito_tip_payment invariant_change_block_builder_updates_config \
+        --release --timeout 30)
+(cd references/jito_tippay_ref/fuzz/jito_block_builder_commission_bounds && \
+    crucible run jito_tip_payment invariant_block_builder_commission_pct_bound \
+        --release --timeout 30)
 
-# 7. Same invariant against the planted twin (expect a FUZZ_FINDING within ~1s).
+# 7. Same invariants against the planted twins (expect violations within ~1s each).
 (cd references/jito_tippay_ref_planted_change_tip_receiver_state/fuzz/jito_change_tip_receiver_state && \
     crucible run jito_tip_payment invariant_change_tip_receiver_updates_config \
+        --release --timeout 30)
+(cd references/jito_tippay_ref_planted_change_block_builder_state/fuzz/jito_change_block_builder_state && \
+    crucible run jito_tip_payment invariant_change_block_builder_updates_config \
+        --release --timeout 30)
+(cd references/jito_tippay_ref_planted_block_builder_commission/fuzz/jito_block_builder_commission_bounds && \
+    crucible run jito_tip_payment invariant_block_builder_commission_pct_bound \
         --release --timeout 30)
 ```
 
