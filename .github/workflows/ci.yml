@@ -11,9 +11,13 @@ name: ci
 # artifact. If any matrix cell stops being green, the artifact is
 # broken — we never publish a manual "verified" claim.
 #
-# Class proven by this CI:
+# Classes proven by this CI:
 #   - change_tip_receiver_state_update — jito_tippay_ref pair,
 #     invariant_change_tip_receiver_updates_config
+#   - change_block_builder_state_update — jito_tippay_ref pair,
+#     invariant_change_block_builder_updates_config
+#   - block_builder_commission_pct_bounds — jito_tippay_ref pair,
+#     invariant_block_builder_commission_pct_bound
 #
 # Pinned upstream surfaces (matched to cf-invariants-jito's ci.yml):
 #   - Crucible:        v0.2.0    (asymmetric-research/crucible)
@@ -174,16 +178,46 @@ jobs:
             --manifest-path references/jito_tippay_ref_planted_change_tip_receiver_state/programs/tip-payment/Cargo.toml
           ls -l references/jito_tippay_ref_planted_change_tip_receiver_state/target/deploy/jito_tip_payment.so
 
+      - name: cargo build-sbf jito_tippay_ref_planted_change_block_builder_state
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/jito_tippay_ref_planted_change_block_builder_state/programs/tip-payment/Cargo.toml
+          ls -l references/jito_tippay_ref_planted_change_block_builder_state/target/deploy/jito_tip_payment.so
+
+      - name: cargo build-sbf jito_tippay_ref_planted_block_builder_commission
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/jito_tippay_ref_planted_block_builder_commission/programs/tip-payment/Cargo.toml
+          ls -l references/jito_tippay_ref_planted_block_builder_commission/target/deploy/jito_tip_payment.so
+
       # -----------------------------------------------------------------
       # Sync fixture source clean → planted (the fixture source IS the
       # contract; both variants must run the same probe code so the only
       # behavioral difference is the planted bug in the program .so).
       # -----------------------------------------------------------------
 
-      - name: Sync fixture source clean → planted
+      - name: Sync fixture source clean → planted (change_tip_receiver_state)
         run: |
           cp references/jito_tippay_ref/fuzz/jito_change_tip_receiver_state/src/main.rs \
              references/jito_tippay_ref_planted_change_tip_receiver_state/fuzz/jito_change_tip_receiver_state/src/main.rs
+
+      - name: Sync fixture source clean → planted (change_block_builder_state)
+        run: |
+          cp references/jito_tippay_ref/fuzz/jito_change_block_builder_state/src/main.rs \
+             references/jito_tippay_ref_planted_change_block_builder_state/fuzz/jito_change_block_builder_state/src/main.rs
+
+      - name: Sync fixture source clean → planted (block_builder_commission_bounds)
+        run: |
+          cp references/jito_tippay_ref/fuzz/jito_block_builder_commission_bounds/src/main.rs \
+             references/jito_tippay_ref_planted_block_builder_commission/fuzz/jito_block_builder_commission_bounds/src/main.rs
 
       # -----------------------------------------------------------------
       # Pair — change_tip_receiver_state_update
@@ -213,7 +247,7 @@ jobs:
               2>&1 | tee "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_planted.out"
           rc=${PIPESTATUS[0]}
           set -e
-          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_planted.out"; then
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED|\[VIOLATION\]' "$GITHUB_WORKSPACE/ci-out/change_tip_receiver_state_planted.out"; then
             echo "change_tip_receiver_state planted reported a violation (expected)."
             exit 0
           elif [ "$rc" -ne 0 ]; then
@@ -221,6 +255,84 @@ jobs:
             exit 0
           else
             echo "::error::change_tip_receiver_state planted ran clean — the dropped Config.tip_receiver commit was not surfaced within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Pair — change_block_builder_state_update
+      # -----------------------------------------------------------------
+
+      - name: Crucible run — change_block_builder_state CLEAN (expect 0 violations)
+        id: change_block_builder_state_clean
+        working-directory: references/jito_tippay_ref/fuzz/jito_change_block_builder_state
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run jito_tip_payment invariant_change_block_builder_updates_config \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/change_block_builder_state_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED|\[VIOLATION\]' "$GITHUB_WORKSPACE/ci-out/change_block_builder_state_clean.out"; then
+            echo "::error::change_block_builder_state clean reported a violation — the rotation commit is being missed or the fixture's oracle is wrong"
+            exit 1
+          fi
+
+      - name: Crucible run — change_block_builder_state PLANTED (expect >=1 violation)
+        id: change_block_builder_state_planted
+        working-directory: references/jito_tippay_ref_planted_change_block_builder_state/fuzz/jito_change_block_builder_state
+        run: |
+          set +e
+          crucible run jito_tip_payment invariant_change_block_builder_updates_config \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/change_block_builder_state_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED|\[VIOLATION\]' "$GITHUB_WORKSPACE/ci-out/change_block_builder_state_planted.out"; then
+            echo "change_block_builder_state planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "change_block_builder_state planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::change_block_builder_state planted ran clean — the dropped Config.block_builder commit was not surfaced within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Pair — block_builder_commission_pct_bounds
+      # -----------------------------------------------------------------
+
+      - name: Crucible run — block_builder_commission_bounds CLEAN (expect 0 violations)
+        id: block_builder_commission_bounds_clean
+        working-directory: references/jito_tippay_ref/fuzz/jito_block_builder_commission_bounds
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run jito_tip_payment invariant_block_builder_commission_pct_bound \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/block_builder_commission_bounds_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED|\[VIOLATION\]' "$GITHUB_WORKSPACE/ci-out/block_builder_commission_bounds_clean.out"; then
+            echo "::error::block_builder_commission_bounds clean reported a violation — the require_gte! check is being missed or the fixture's oracle is wrong"
+            exit 1
+          fi
+
+      - name: Crucible run — block_builder_commission_bounds PLANTED (expect >=1 violation)
+        id: block_builder_commission_bounds_planted
+        working-directory: references/jito_tippay_ref_planted_block_builder_commission/fuzz/jito_block_builder_commission_bounds
+        run: |
+          set +e
+          crucible run jito_tip_payment invariant_block_builder_commission_pct_bound \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/block_builder_commission_bounds_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED|\[VIOLATION\]' "$GITHUB_WORKSPACE/ci-out/block_builder_commission_bounds_planted.out"; then
+            echo "block_builder_commission_bounds planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "block_builder_commission_bounds planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::block_builder_commission_bounds planted ran clean — the dropped require_gte! gate was not surfaced within ${CRUCIBLE_TIMEOUT}s."
             exit 1
           fi
 
@@ -264,8 +376,12 @@ jobs:
               echo '```'
             } > "$out_dir/scorecard.md"
           }
-          render_scorecard "change_tip_receiver_state" "clean"   "1" "0"   "change_tip_receiver_state_update"
-          render_scorecard "change_tip_receiver_state" "planted" "1" ">=1" "change_tip_receiver_state_update"
+          render_scorecard "change_tip_receiver_state"        "clean"   "1" "0"   "change_tip_receiver_state_update"
+          render_scorecard "change_tip_receiver_state"        "planted" "1" ">=1" "change_tip_receiver_state_update"
+          render_scorecard "change_block_builder_state"       "clean"   "1" "0"   "change_block_builder_state_update"
+          render_scorecard "change_block_builder_state"       "planted" "1" ">=1" "change_block_builder_state_update"
+          render_scorecard "block_builder_commission_bounds"  "clean"   "1" "0"   "block_builder_commission_pct_bounds"
+          render_scorecard "block_builder_commission_bounds"  "planted" "1" ">=1" "block_builder_commission_pct_bounds"
 
       - name: Upload scorecards + raw output as artifact
         if: always()
@@ -276,3 +392,7 @@ jobs:
             ci-out/*.out
             findings/change_tip_receiver_state_clean/scorecard.md
             findings/change_tip_receiver_state_planted/scorecard.md
+            findings/change_block_builder_state_clean/scorecard.md
+            findings/change_block_builder_state_planted/scorecard.md
+            findings/block_builder_commission_bounds_clean/scorecard.md
+            findings/block_builder_commission_bounds_planted/scorecard.md
