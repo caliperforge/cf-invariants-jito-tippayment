@@ -221,3 +221,5 @@ CaliperForge banner. CaliperForge is a sole-operator engineering studio.
 This scaffold was built with AI assistance. Authored and reviewed by
 Michael Moffett, operator at CaliperForge. Full policy at
 [caliperforge.com/ai-disclosure](https://caliperforge.com/ai-disclosure).
+
+[caliperforge.com](https://caliperforge.com)
