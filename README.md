@@ -1,5 +1,7 @@
 # cf-invariants-jito-tippayment
 
+[![ci](https://github.com/caliperforge/cf-invariants-jito-tippayment/actions/workflows/ci.yml/badge.svg)](https://github.com/caliperforge/cf-invariants-jito-tippayment/actions/workflows/ci.yml)
+
 **An invariant-fuzzing harness for the [Jito tip-payment program](https://github.com/jito-foundation/jito-programs/tree/master/mev-programs/programs/tip-payment), run on [Crucible](https://github.com/asymmetric-research/crucible).**
 
 cf-invariants-jito-tippayment is a focused harness, not a new fuzzer. It
