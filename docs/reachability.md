@@ -47,12 +47,12 @@ Per planted class, the spike adds:
    `keypair_from_rng(rng)` scaffolding (copy verbatim from the
    Solana atlas reference implementation), followed by the
    class-specific deterministic sequence:
-   - block_builder_commission: fund tip pool → invoke commission
-     accrual → assert Σ (paid + retained) == starting Σ.
-   - change_tip_receiver_state: initialize with receiver A →
-     attempt change from non-authority → assert receiver == A.
-   - change_block_builder_state: initialize with builder A →
-     attempt change from non-authority → assert builder == A.
+   - block_builder_commission: fund tip pool -> invoke commission
+     accrual -> assert Sum (paid + retained) == starting Sum.
+   - change_tip_receiver_state: initialize with receiver A ->
+     attempt change from non-authority -> assert receiver == A.
+   - change_block_builder_state: initialize with builder A ->
+     attempt change from non-authority -> assert builder == A.
 4. When `REACHABILITY_SEED` is absent, fallback to fixed values so
    normal `cargo run --release --bin regression` remains
    developer-friendly.
@@ -64,9 +64,9 @@ needs per-class authorship.
 
 ## What lands today
 
-- `ci/reachability_seeds.txt` — canonical 16-seed set (byte-identical
+- `ci/reachability_seeds.txt` : canonical 16-seed set (byte-identical
   to sibling repos).
-- `docs/reachability.md` — this file.
+- `docs/reachability.md` : this file.
 
 No workflow changes; no README verdict block.
 
