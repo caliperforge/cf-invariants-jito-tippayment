@@ -1,0 +1,20 @@
+# Canonical 16-seed reachability set.
+# Each seed is a 16-hex-char u64. Distinct, deterministic, low-bias mix
+# of small integers, common patterns, and pseudo-random-looking bytes.
+# Order matters (verdict emits per-seed in this order).
+0x0000000000000001
+0x0000000000000002
+0x0000000000000003
+0x0000000000000005
+0x0000000000000008
+0x000000000000000d
+0x0000000000000015
+0x0000000000000022
+0x0123456789abcdef
+0xdeadbeef00000001
+0xcafebabe00000001
+0xfeedface00000001
+0x1337c0de00000001
+0xa5a5a5a5a5a5a5a5
+0x5a5a5a5a5a5a5a5a
+0xffffffffffffffff
